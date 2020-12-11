@@ -2,18 +2,24 @@
 #
 # Don't forget to add your pipeline to the ITEM_PIPELINES setting
 # See: http://doc.scrapy.org/en/latest/topics/item-pipeline.html
+import time
 import datetime
 import json
 import logging
 import os.path
 import sys
+import re
 
 import pymysql
 import psycopg2
 from dateutil import parser as dateparser
 from elasticsearch import Elasticsearch
+from pymongo import MongoClient
+from pymongo.errors import AutoReconnect
 from scrapy.exceptions import DropItem
+from bs4 import BeautifulSoup
 
+from newsplease.pipeline import custom_parser
 from NewsArticle import NewsArticle
 from .extractor import article_extractor
 from ..config import CrawlerConfig
@@ -28,6 +34,18 @@ except ImportError:
     np = None
     pd = None
 
+
+def regex_from_list(_list, compile=True):
+    """
+    Creates a regex from a list of patterns
+    :param _list: list of patterns
+    :param compile: True if return compiled regex, False if return string
+    :return: compiled regex
+    """
+    if compile:
+        return re.compile('(' + '|'.join(_list) + ')')
+    else: 
+        return '(' + '|'.join(_list) + ')'
 
 class HTMLCodeHandling(object):
     """
@@ -309,19 +327,45 @@ class ExtractedInformationStorage(object):
             'url': item['url']
         }
 
+        # check the domain
+        if article['source_domain'].startswith('www.') or article['source_domain'].startswith('ww2.'):
+            article['source_domain'] = article['source_domain'][4:]
+
+        # check for custom parser
+        custom_name = article['source_domain'].replace('.', '') + '_story'
+        custom_name = custom_name.lower()
+        custom_name = custom_name.replace('-', '_')
+        if bool(re.search(r'^\d', custom_name)):
+            custom_name = '_' + custom_name
+        if custom_name in dir(custom_parser):
+            domain_parser = getattr(custom_parser, custom_name)
+            custom_parsed = domain_parser(BeautifulSoup(item['spider_response'].body, 'lxml'))
+            for kk in custom_parsed.keys():
+                article[kk] = custom_parsed[kk]
+
         # clean values
         for key in article:
             value = article[key]
             if isinstance(value, str) and not value:
                 article[key] = None
 
+        # fix dates 
+        article['date_download '] = ExtractedInformationStorage.datestring_to_date(article['date_download'])
+        article['date_modify'] = ExtractedInformationStorage.datestring_to_date(article['date_modify'])
+        article['date_publish'] = ExtractedInformationStorage.datestring_to_date(article['date_publish'])
+
         return article
 
     @staticmethod
     def datestring_to_date(text):
-        if text:
-            return dateparser.parse(text)
-        else:
+        try:
+            if isinstance(text, datetime.datetime):
+                return text
+            else:
+                return dateparser.parse(text)
+        except AttributeError:
+            return None
+        except TypeError:
             return None
 
     @staticmethod
@@ -559,6 +603,98 @@ class JsonFileStorage(ExtractedInformationStorage):
 
         return item
 
+
+class MongoStorage(object):
+    """
+    Handles remote storage of the meta data in the DB
+    """
+
+    log = None
+    cfg = None
+    database = None
+    mongo_uri = None
+    mongo_db = None
+    collection = None
+    client = None
+    db = None
+
+    def __init__(self):
+
+        self.log = logging.getLogger(__name__)
+
+        self.cfg = CrawlerConfig.get_instance()
+        self.database = self.cfg.section("MongoDB")
+        # Establish DB connection
+        # Closing of the connection is handled once the spider closes
+        self.mongo_uri = self.database['uri']
+        self.mongo_db = self.database['db']
+        self.client = MongoClient(self.mongo_uri)
+        self.db = self.client[self.mongo_db]
+        self.blacklists = {
+                    doc['source_domain']: regex_from_list(doc['blacklist_url_patterns']) for 
+                    doc in self.db.sources.find({'blacklist_url_patterns': {'$ne': []}})
+                }
+        self.domains = set([doc['source_domain'] for doc in self.db['sources'].find()])
+
+    def process_item(self, item, spider):
+        """
+        Store an item in DB
+        MongoDB will reject items with a duplicate index so we'll use url index to prevent duplicates
+        TODO: figure out if I want to do an archive like in the original news-please
+        """
+        # insert indicator for fresh story
+        article = ExtractedInformationStorage.extract_relevant_info(item)
+        article['event_extracted'] = 0
+
+        # filter out domains I don't want
+        if article['source_domain'] not in self.domains:
+            return item
+
+        # get the proper collection name
+        try:
+            colname = f"articles-{article['date_publish'].year}-{article['date_publish'].month}"
+        except:
+            colname = 'article-nodate'
+
+        if colname not in [ll for ll in self.db.list_collection_names()]:
+            self.db.create_collection(colname)
+            self.db[colname].create_index('url', unique=True)
+            self.db[colname].create_index('source_domain')
+            self.db[colname].create_index('date_publish')
+            self.db[colname].create_index('title')
+            for mn in [doc['model_name'] for doc in self.db['models'].find()]:
+                self.db[colname].create_index(f'{mn}.event_type')
+
+        # check to see that it doesn't hit any blacklist
+        if article['source_domain'] in self.blacklists:
+            if not bool(self.blacklists[article['source_domain']].search(article['url'])):
+                while True:
+                    try:
+                        if self.db[colname].count_documents({'url': article['url']}, limit=1) == 0:
+                            self.db[colname].insert_one(article)
+                            self.log.info("INSERTED " + article['url'] + f' into {colname}') 
+                    except AutoReconnect:
+                        time.sleep(3)
+                        continue
+                    break
+                
+        # if there are no blacklists to check
+        else:
+            while True:
+                try:
+                    if self.db[colname].count_documents({'url': article['url']}, limit=1) == 0:
+                        self.db[colname].insert_one(article)
+                        self.db['urls'].insert_one({'url': article['url']})
+                        self.log.info("INSERTED " + article['url'] + f' into {colname}')
+                except AutoReconnect:
+                    time.sleep(3)
+                    continue
+                break
+        
+        return item
+
+    def close_spider(self, spider):
+        self.client.close()
 
 class ElasticsearchStorage(ExtractedInformationStorage):
     """
