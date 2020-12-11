@@ -37,6 +37,7 @@ class LangExtractor(AbstractExtractor):
 
     def __init__(self):
         self.name = "langdetect"
+        self.langcode_pattern = re.compile(r'\b[a-zA-Z]{2}(?=([-_]|\b))')
 
     def _language(self, item):
         """Returns the language of the extracted article by analyzing metatags and inspecting the visible text
