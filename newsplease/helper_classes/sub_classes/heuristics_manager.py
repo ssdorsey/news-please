@@ -46,7 +46,7 @@ class HeuristicsManager(object):
         site = self.__sites_object[url]
         heuristics = self.__get_enabled_heuristics(url)
 
-        self.log.info("Checking site: %s", response.url)
+        # self.log.info("Checking site: %s", response.url)
 
         statement = self.__get_condition(url)
         self.log.debug("Condition (original): %s", statement)
