@@ -294,15 +294,7 @@ class ExtractedInformationStorage(object):
         self.log.addHandler(logging.NullHandler())
         self.cfg = CrawlerConfig.get_instance()
 
-    @staticmethod
-    def ensure_str(text):
-        if isinstance(text, str):
-            return text
-        else:
-            return text.decode('utf-8')
-
-    @staticmethod
-    def extract_relevant_info(item):
+    def extract_relevant_info(self, item):
         """
         extracts from an item only fields that we want to output as extracted information
         :rtype: object
@@ -352,12 +344,22 @@ class ExtractedInformationStorage(object):
             if isinstance(value, str) and not value:
                 article[key] = None
 
+        # drop localpath
+        article.pop('localpath', None)
+
         # fix dates 
-        article['date_download '] = ExtractedInformationStorage.datestring_to_date(article['date_download'])
+        article['date_download'] = ExtractedInformationStorage.datestring_to_date(article['date_download'])
         article['date_modify'] = ExtractedInformationStorage.datestring_to_date(article['date_modify'])
         article['date_publish'] = ExtractedInformationStorage.datestring_to_date(article['date_publish'])
 
         return article
+
+    @staticmethod
+    def ensure_str(text):
+        if isinstance(text, str):
+            return text
+        else:
+            return text.decode('utf-8')
 
     @staticmethod
     def datestring_to_date(text):
