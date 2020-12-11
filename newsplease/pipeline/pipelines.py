@@ -338,10 +338,13 @@ class ExtractedInformationStorage(object):
         if bool(re.search(r'^\d', custom_name)):
             custom_name = '_' + custom_name
         if custom_name in dir(custom_parser):
-            domain_parser = getattr(custom_parser, custom_name)
-            custom_parsed = domain_parser(BeautifulSoup(item['spider_response'].body, 'lxml'))
-            for kk in custom_parsed.keys():
-                article[kk] = custom_parsed[kk]
+            try:
+                domain_parser = getattr(custom_parser, custom_name)
+                custom_parsed = domain_parser(BeautifulSoup(item['spider_response'].body, 'lxml'))
+                for kk in custom_parsed.keys():
+                    article[kk] = custom_parsed[kk]
+            except AttributeError:
+                self.log.error(f'Error parsing {article["url"]}')
 
         # clean values
         for key in article:
