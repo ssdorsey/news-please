@@ -294,13 +294,23 @@ class ExtractedInformationStorage(object):
         self.log.addHandler(logging.NullHandler())
         self.cfg = CrawlerConfig.get_instance()
 
-    def extract_relevant_info(self, item):
+    @staticmethod
+    def ensure_str(text):
+        if isinstance(text, str):
+            return text
+        else:
+            return text.decode('utf-8')
+
+    @staticmethod
+    def extract_relevant_info(item):
         """
         extracts from an item only fields that we want to output as extracted information
         :rtype: object
         :param item:
         :return:
         """
+        log = logging.getLogger(__name__)
+        
         article = {
             'authors': item['article_author'],
             'date_download': item['download_date'],
@@ -336,7 +346,7 @@ class ExtractedInformationStorage(object):
                 for kk in custom_parsed.keys():
                     article[kk] = custom_parsed[kk]
             except AttributeError:
-                self.log.error(f'Error parsing {article["url"]}')
+                log.error(f'Error parsing {article["url"]}')
 
         # clean values
         for key in article:
@@ -353,13 +363,6 @@ class ExtractedInformationStorage(object):
         article['date_publish'] = ExtractedInformationStorage.datestring_to_date(article['date_publish'])
 
         return article
-
-    @staticmethod
-    def ensure_str(text):
-        if isinstance(text, str):
-            return text
-        else:
-            return text.decode('utf-8')
 
     @staticmethod
     def datestring_to_date(text):
